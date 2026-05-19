@@ -11,6 +11,8 @@ File Sender 是一个 AstrBot 文件发送插件，用于在 OneBot v11（aiocqh
 - 支持 `/sendfile` 指令手动发送文件
 - 支持 LLM 工具 `send_local_file` 与 `upload_file_to_user`
 - 支持 `astrbot_file_write_tool` 写出的 workspace 相对路径，例如 `test.txt`
+- 支持拦截当前 OneBot 会话中其他插件通过标准结果链或 `context.send_message` 发送的本地文件，并改走 NapCat 上传流程
+- 支持多个上传请求并发处理，每个文件上传使用独立 stream_id
 
 ## 支持平台
 
@@ -100,6 +102,13 @@ NapCat HTTP 服务启用 token 时填写；未启用 token 可留空。
 3. NapCat 返回协议端可访问的文件路径。
 4. 私聊文件调用 `upload_private_file`。
 5. 群文件和 QQ 群临时文件调用 `upload_group_file`。
+
+## 更新日志
+
+### v1.1
+
+- 新增拦截当前 OneBot 会话中其他插件的本地文件发送。
+- 支持接管 AstrBot 标准结果链中的 `File` 组件，避免 OneBot/NapCat 直接读取 AstrBot 本地路径导致 ENOENT。
 
 ## 常见问题
 

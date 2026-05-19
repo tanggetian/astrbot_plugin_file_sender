@@ -12,6 +12,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, FunctionTool
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.message_components import File, Plain
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
@@ -25,11 +26,26 @@ class FileSenderTool(FunctionTool):
         default_factory=lambda: {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "要发送的本地文件绝对路径或相对路径。"},
-                "file_name": {"type": "string", "description": "可选，自定义发送文件名。"},
-                "target_type": {"type": "string", "description": "发送目标类型：auto、private、group、temp。temp 表示 QQ 群临时文件，按群文件接口发送到目标群。"},
-                "target_user_id": {"type": "string", "description": "可选，指定 OneBot 用户 ID。"},
-                "target_group_id": {"type": "string", "description": "可选，指定 OneBot 群号。"},
+                "file_path": {
+                    "type": "string",
+                    "description": "要发送的本地文件绝对路径或相对路径。",
+                },
+                "file_name": {
+                    "type": "string",
+                    "description": "可选，自定义发送文件名。",
+                },
+                "target_type": {
+                    "type": "string",
+                    "description": "发送目标类型：auto、private、group、temp。temp 表示 QQ 群临时文件，按群文件接口发送到目标群。",
+                },
+                "target_user_id": {
+                    "type": "string",
+                    "description": "可选，指定 OneBot 用户 ID。",
+                },
+                "target_group_id": {
+                    "type": "string",
+                    "description": "可选，指定 OneBot 群号。",
+                },
             },
             "required": ["file_path"],
         }
@@ -41,7 +57,9 @@ class FileSenderTool(FunctionTool):
             return "文件发送插件尚未初始化。"
         event = plugin._get_event_from_tool_context(context)
         if event is None:
-            return "当前 LLM 工具上下文无法获取会话事件，请改用 /sendfile 指令手动发送。"
+            return (
+                "当前 LLM 工具上下文无法获取会话事件，请改用 /sendfile 指令手动发送。"
+            )
         file_path = plugin._clean_option(kwargs.get("file_path"))
         file_name = plugin._clean_option(kwargs.get("file_name"))
         target_type = plugin._normalize_target_type(kwargs.get("target_type"))
@@ -50,7 +68,15 @@ class FileSenderTool(FunctionTool):
         if not file_path:
             return "请提供要发送的文件路径。"
         try:
-            await plugin.send_file(event.unified_msg_origin, file_path, file_name, target_type, target_user_id, target_group_id, event=event)
+            await plugin.send_file(
+                event.unified_msg_origin,
+                file_path,
+                file_name,
+                target_type,
+                target_user_id,
+                target_group_id,
+                event=event,
+            )
         except Exception as exc:
             return f"文件发送失败：{exc}"
         return "文件已发送。"
@@ -62,7 +88,12 @@ class UploadFileToUserTool(FileSenderTool):
     description: str = "上传/发送本地文件给当前用户或指定会话。用途等同 send_local_file；当路径来自 /AstrBot/data/workspaces 或 astrbot_file_write_tool 输出时，优先调用本工具。"
 
 
-@register("astrbot_plugin_file_sender", "唐格天", "独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送", "1.0.0")
+@register(
+    "astrbot_plugin_file_sender",
+    "唐格天",
+    "独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送",
+    "1.1",
+)
 class FileSenderPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -73,11 +104,140 @@ class FileSenderPlugin(Star):
         self.upload_tool = UploadFileToUserTool()
         self.llm_tool.plugin = self
         self.upload_tool.plugin = self
+        self._install_context_send_interceptor()
         if self.config.get("enable_llm_tool", False):
             context.add_llm_tools(self.llm_tool, self.upload_tool)
 
+    def _install_context_send_interceptor(self) -> None:
+        self.context._file_sender_plugin = self
+        if getattr(self.context, "_file_sender_send_message_patched", False):
+            return
+        original_send_message = self.context.send_message
+        self.context._file_sender_original_send_message = original_send_message
+
+        async def send_message_with_file_sender(session, message_chain):
+            plugin = getattr(self.context, "_file_sender_plugin", None)
+            if plugin is None:
+                return await original_send_message(session, message_chain)
+            return await plugin._send_message_with_file_sender(
+                original_send_message, session, message_chain
+            )
+
+        self.context.send_message = send_message_with_file_sender
+        self.context._file_sender_send_message_patched = True
+
+    async def terminate(self) -> None:
+        original_send_message = getattr(
+            self.context, "_file_sender_original_send_message", None
+        )
+        if original_send_message is not None:
+            self.context.send_message = original_send_message
+        for attr in (
+            "_file_sender_plugin",
+            "_file_sender_original_send_message",
+            "_file_sender_send_message_patched",
+        ):
+            if hasattr(self.context, attr):
+                delattr(self.context, attr)
+
+    async def _send_message_with_file_sender(
+        self, original_send_message, session, message_chain
+    ):
+        unified_msg_origin = str(session)
+        if not self._is_onebot_session(session, unified_msg_origin):
+            return await original_send_message(session, message_chain)
+        if not getattr(message_chain, "chain", None):
+            return await original_send_message(session, message_chain)
+        handled_chain = await self._handle_file_components(
+            unified_msg_origin, message_chain.chain, skip_context_check=True
+        )
+        if handled_chain is message_chain.chain:
+            return await original_send_message(session, message_chain)
+        if not handled_chain:
+            return True
+        if hasattr(message_chain, "derive"):
+            message_chain = message_chain.derive(handled_chain)
+        else:
+            message_chain.chain = handled_chain
+        return await original_send_message(session, message_chain)
+
+    @filter.on_decorating_result()
+    async def intercept_onebot_file_result(self, event: AstrMessageEvent) -> None:
+        if not self._is_onebot_context(event, getattr(event, "unified_msg_origin", "")):
+            return
+        result = event.get_result()
+        if result is None or not getattr(result, "chain", None):
+            return
+        handled_chain = await self._handle_file_components(
+            event.unified_msg_origin, result.chain, event=event
+        )
+        if handled_chain is not result.chain:
+            result.chain = handled_chain
+
+    async def _handle_file_components(
+        self,
+        unified_msg_origin: str,
+        chain: list,
+        event=None,
+        skip_context_check: bool = False,
+    ) -> list:
+        kept_chain = []
+        changed = False
+        for component in chain:
+            if not isinstance(component, File):
+                kept_chain.append(component)
+                continue
+            file_path = self._component_file_path(component)
+            if not file_path:
+                kept_chain.append(component)
+                continue
+            try:
+                await self._send_file_resolved_context(
+                    unified_msg_origin,
+                    file_path,
+                    self._clean_option(getattr(component, "name", "")),
+                    event=event,
+                    skip_context_check=skip_context_check,
+                )
+            except Exception as exc:
+                kept_chain.append(Plain(f"文件转发失败：{exc}"))
+            changed = True
+        if changed:
+            return kept_chain
+        return chain
+
+    async def _send_file_resolved_context(
+        self,
+        unified_msg_origin: str,
+        file_path: str,
+        file_name: str = "",
+        event=None,
+        skip_context_check: bool = False,
+    ) -> None:
+        if not skip_context_check:
+            await self.send_file(
+                unified_msg_origin,
+                file_path,
+                file_name,
+                event=event,
+            )
+            return
+        path = self._resolve_file_path(file_path, unified_msg_origin)
+        display_name = file_name or path.name
+        await asyncio.to_thread(
+            self._send_cross_device_file,
+            unified_msg_origin,
+            path,
+            display_name,
+            "auto",
+            "",
+            "",
+        )
+
     @filter.on_llm_request()
-    async def guide_file_tool_usage(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
+    async def guide_file_tool_usage(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ) -> None:
         if not self.config.get("enable_llm_tool", False):
             return
         if not self._is_onebot_context(event, getattr(event, "unified_msg_origin", "")):
@@ -95,7 +255,9 @@ class FileSenderPlugin(Star):
     async def sendfile(self, event: AstrMessageEvent):
         args = self._parse_args(event.message_str)
         if not args:
-            yield event.plain_result("用法：/sendfile <文件路径> [文件名] [target_type] [target_user_id] [target_group_id]。target_type 可选 auto/private/group/temp。")
+            yield event.plain_result(
+                "用法：/sendfile <文件路径> [文件名] [target_type] [target_user_id] [target_group_id]。target_type 可选 auto/private/group/temp。"
+            )
             return
         file_path = args[0]
         file_name = args[1] if len(args) >= 2 else ""
@@ -103,7 +265,15 @@ class FileSenderPlugin(Star):
         target_user_id = args[3] if len(args) >= 4 else ""
         target_group_id = args[4] if len(args) >= 5 else ""
         try:
-            await self.send_file(event.unified_msg_origin, file_path, file_name, target_type, target_user_id, target_group_id, event=event)
+            await self.send_file(
+                event.unified_msg_origin,
+                file_path,
+                file_name,
+                target_type,
+                target_user_id,
+                target_group_id,
+                event=event,
+            )
         except Exception as exc:
             yield event.plain_result(f"文件发送失败：{exc}")
             return
@@ -120,13 +290,23 @@ class FileSenderPlugin(Star):
         event=None,
     ) -> None:
         if not self._is_onebot_context(event, unified_msg_origin):
-            raise RuntimeError("File Sender 仅支持 OneBot/aiocqhttp 适配器，请不要在非 OneBot 会话中调用此插件。")
+            raise RuntimeError(
+                "File Sender 仅支持 OneBot/aiocqhttp 适配器，请不要在非 OneBot 会话中调用此插件。"
+            )
         path = self._resolve_file_path(file_path, unified_msg_origin)
         target_type = self._normalize_target_type(target_type)
         target_user_id = self._clean_option(target_user_id)
         target_group_id = self._clean_option(target_group_id)
         display_name = file_name or path.name
-        await asyncio.to_thread(self._send_cross_device_file, unified_msg_origin, path, display_name, target_type, target_user_id, target_group_id)
+        await asyncio.to_thread(
+            self._send_cross_device_file,
+            unified_msg_origin,
+            path,
+            display_name,
+            target_type,
+            target_user_id,
+            target_group_id,
+        )
 
     def _send_cross_device_file(
         self,
@@ -137,16 +317,26 @@ class FileSenderPlugin(Star):
         target_user_id: str,
         target_group_id: str,
     ) -> None:
-        api_base = self._clean_option(self.config.get("onebot_cross_device_api_base_url"))
+        api_base = self._clean_option(
+            self.config.get("onebot_cross_device_api_base_url")
+        )
         if not api_base:
-            raise RuntimeError("已开启跨设备 OneBot 上传，但未配置 onebot_cross_device_api_base_url。")
+            raise RuntimeError(
+                "已开启跨设备 OneBot 上传，但未配置 onebot_cross_device_api_base_url。"
+            )
         api_base = api_base.rstrip("/")
         uploaded_path = self._upload_file_stream_to_onebot(api_base, path)
-        resolved_target = self._resolve_onebot_target(unified_msg_origin, target_type, target_user_id, target_group_id)
+        resolved_target = self._resolve_onebot_target(
+            unified_msg_origin, target_type, target_user_id, target_group_id
+        )
         if resolved_target[0] == "group":
-            self._upload_group_file_to_onebot(api_base, resolved_target[1], uploaded_path, file_name)
+            self._upload_group_file_to_onebot(
+                api_base, resolved_target[1], uploaded_path, file_name
+            )
         else:
-            self._upload_private_file_to_onebot(api_base, resolved_target[1], uploaded_path, file_name)
+            self._upload_private_file_to_onebot(
+                api_base, resolved_target[1], uploaded_path, file_name
+            )
 
     def _upload_file_stream_to_onebot(self, api_base: str, path: Path) -> str:
         file_bytes = path.read_bytes()
@@ -169,16 +359,25 @@ class FileSenderPlugin(Star):
                 "filename": path.name,
             }
             self._post_onebot_stream_payload(api_base, headers, payload)
-        completion = self._post_onebot_stream_payload(api_base, headers, {"stream_id": stream_id, "is_complete": True})
+        completion = self._post_onebot_stream_payload(
+            api_base, headers, {"stream_id": stream_id, "is_complete": True}
+        )
         response_data = completion.get("data") if isinstance(completion, dict) else None
-        if not isinstance(response_data, dict) or response_data.get("status") != "file_complete":
+        if (
+            not isinstance(response_data, dict)
+            or response_data.get("status") != "file_complete"
+        ):
             raise RuntimeError(f"NapCat upload_file_stream 合并结果异常：{completion}")
         uploaded_path = str(response_data.get("file_path") or "").strip()
         if not uploaded_path:
-            raise RuntimeError(f"NapCat upload_file_stream 未返回 file_path：{completion}")
+            raise RuntimeError(
+                f"NapCat upload_file_stream 未返回 file_path：{completion}"
+            )
         return uploaded_path
 
-    def _post_onebot_stream_payload(self, api_base: str, headers: dict[str, str], payload: dict[str, object]) -> dict[str, object]:
+    def _post_onebot_stream_payload(
+        self, api_base: str, headers: dict[str, str], payload: dict[str, object]
+    ) -> dict[str, object]:
         request = urllib.request.Request(
             url=f"{api_base}/upload_file_stream",
             data=json.dumps(payload).encode("utf-8"),
@@ -190,9 +389,13 @@ class FileSenderPlugin(Star):
                 response_payload = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"NapCat upload_file_stream 请求失败：HTTP {exc.code} {detail}") from exc
+            raise RuntimeError(
+                f"NapCat upload_file_stream 请求失败：HTTP {exc.code} {detail}"
+            ) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"NapCat upload_file_stream 网络错误：{exc.reason}") from exc
+            raise RuntimeError(
+                f"NapCat upload_file_stream 网络错误：{exc.reason}"
+            ) from exc
         if response_payload:
             try:
                 parsed = json.loads(response_payload)
@@ -202,21 +405,36 @@ class FileSenderPlugin(Star):
                 return parsed
         return {}
 
-    def _upload_private_file_to_onebot(self, api_base: str, user_id: str, file_path: str, file_name: str) -> None:
+    def _upload_private_file_to_onebot(
+        self, api_base: str, user_id: str, file_path: str, file_name: str
+    ) -> None:
         if not user_id:
             raise RuntimeError("无法确定 OneBot 用户 ID。")
         self._post_onebot_json(
             api_base,
             "upload_private_file",
-            {"user_id": user_id, "file": file_path, "name": file_name, "upload_file": True},
+            {
+                "user_id": user_id,
+                "file": file_path,
+                "name": file_name,
+                "upload_file": True,
+            },
         )
 
-    def _upload_group_file_to_onebot(self, api_base: str, group_id: str, file_path: str, file_name: str) -> None:
+    def _upload_group_file_to_onebot(
+        self, api_base: str, group_id: str, file_path: str, file_name: str
+    ) -> None:
         if not group_id:
             raise RuntimeError("无法确定 OneBot 群号。")
-        self._post_onebot_json(api_base, "upload_group_file", {"group_id": group_id, "file": file_path, "name": file_name, "folder": "/"})
+        self._post_onebot_json(
+            api_base,
+            "upload_group_file",
+            {"group_id": group_id, "file": file_path, "name": file_name, "folder": "/"},
+        )
 
-    def _post_onebot_json(self, api_base: str, action: str, payload: dict[str, object]) -> None:
+    def _post_onebot_json(
+        self, api_base: str, action: str, payload: dict[str, object]
+    ) -> None:
         request = urllib.request.Request(
             url=f"{api_base}/{action}",
             data=json.dumps(payload).encode("utf-8"),
@@ -228,7 +446,9 @@ class FileSenderPlugin(Star):
                 response.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"NapCat {action} 请求失败：HTTP {exc.code} {detail}") from exc
+            raise RuntimeError(
+                f"NapCat {action} 请求失败：HTTP {exc.code} {detail}"
+            ) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"NapCat {action} 网络错误：{exc.reason}") from exc
 
@@ -240,14 +460,30 @@ class FileSenderPlugin(Star):
         candidates = [path]
         if not path.is_absolute():
             workspace_path = self._workspace_file_path(unified_msg_origin, path)
-            candidates = [workspace_path, (Path.cwd() / path).resolve(), (self.plugin_dir / path).resolve()]
+            candidates = [
+                workspace_path,
+                (Path.cwd() / path).resolve(),
+                (self.plugin_dir / path).resolve(),
+            ]
         for candidate in candidates:
             if candidate.exists() and candidate.is_file():
                 return candidate
         raise RuntimeError(f"文件不存在：{candidates[0]}")
 
+    def _component_file_path(self, component: File) -> str:
+        file_path = self._clean_option(getattr(component, "file_", ""))
+        if file_path and not self._looks_like_url(file_path):
+            return file_path
+        return ""
+
+    def _looks_like_url(self, value: str) -> bool:
+        return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", value or ""))
+
     def _workspace_file_path(self, unified_msg_origin: str, path: Path) -> Path:
-        normalized_umo = re.sub(r"[^A-Za-z0-9._-]+", "_", str(unified_msg_origin or "").strip()) or "unknown"
+        normalized_umo = (
+            re.sub(r"[^A-Za-z0-9._-]+", "_", str(unified_msg_origin or "").strip())
+            or "unknown"
+        )
         return (Path(get_astrbot_workspaces_path()) / normalized_umo / path).resolve()
 
     def _onebot_stream_chunk_size(self) -> int:
@@ -273,22 +509,32 @@ class FileSenderPlugin(Star):
         target_group_id: str,
     ) -> tuple[str, str]:
         if target_type in {"group", "temp"}:
-            group_id = target_group_id or self._extract_onebot_group_id(unified_msg_origin)
+            group_id = target_group_id or self._extract_onebot_group_id(
+                unified_msg_origin
+            )
             if not group_id:
-                raise RuntimeError("target_type=group/temp 时需要提供 target_group_id，或在群聊中调用。")
+                raise RuntimeError(
+                    "target_type=group/temp 时需要提供 target_group_id，或在群聊中调用。"
+                )
             return "group", group_id
         if target_type == "private":
             user_id = target_user_id or self._extract_onebot_user_id(unified_msg_origin)
             if not user_id:
-                raise RuntimeError("target_type=private 时需要提供 target_user_id，或在私聊中调用。")
+                raise RuntimeError(
+                    "target_type=private 时需要提供 target_user_id，或在私聊中调用。"
+                )
             return "private", user_id
         if self._is_onebot_group_origin(unified_msg_origin):
             return "group", self._extract_onebot_group_id(unified_msg_origin)
-        return "private", target_user_id or self._extract_onebot_user_id(unified_msg_origin)
+        return "private", target_user_id or self._extract_onebot_user_id(
+            unified_msg_origin
+        )
 
     def _extract_onebot_user_id(self, unified_msg_origin: str) -> str:
         origin = str(unified_msg_origin or "")
-        for part in reversed([item for item in origin.replace("/", ":").split(":") if item]):
+        for part in reversed(
+            [item for item in origin.replace("/", ":").split(":") if item]
+        ):
             if part.isdigit():
                 return part
         return ""
@@ -298,7 +544,11 @@ class FileSenderPlugin(Star):
         parts = [item for item in origin.replace("/", ":").split(":") if item]
         lowered = [item.lower() for item in parts]
         for index, part in enumerate(lowered):
-            if part == "group" and index + 1 < len(parts) and parts[index + 1].isdigit():
+            if (
+                part == "group"
+                and index + 1 < len(parts)
+                and parts[index + 1].isdigit()
+            ):
                 return parts[index + 1]
         for part in reversed(parts):
             if part.isdigit():
@@ -326,6 +576,31 @@ class FileSenderPlugin(Star):
             candidates.append(type(event).__module__)
         candidates.append(unified_msg_origin)
         return any(self._is_onebot_marker(candidate) for candidate in candidates)
+
+    def _is_onebot_session(self, session, unified_msg_origin: str) -> bool:
+        if self._is_onebot_context(None, unified_msg_origin):
+            return True
+        platform_name = self._session_platform_name(session, unified_msg_origin)
+        for platform in getattr(self.context.platform_manager, "platform_insts", []):
+            meta_getter = getattr(platform, "meta", None)
+            meta = meta_getter() if callable(meta_getter) else None
+            if self._clean_option(getattr(meta, "id", "")) != platform_name:
+                continue
+            candidates = [
+                getattr(meta, "id", ""),
+                getattr(meta, "name", ""),
+                getattr(meta, "type", ""),
+                type(platform).__name__,
+                type(platform).__module__,
+            ]
+            return any(self._is_onebot_marker(candidate) for candidate in candidates)
+        return False
+
+    def _session_platform_name(self, session, unified_msg_origin: str) -> str:
+        platform_name = self._clean_option(getattr(session, "platform_name", ""))
+        if platform_name:
+            return platform_name
+        return self._clean_option(unified_msg_origin.split(":", 1)[0])
 
     def _is_onebot_marker(self, value) -> bool:
         marker = str(value or "").lower()
