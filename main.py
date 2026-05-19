@@ -62,7 +62,7 @@ class UploadFileToUserTool(FileSenderTool):
     description: str = "上传/发送本地文件给当前用户或指定会话。用途等同 send_local_file；当路径来自 /AstrBot/data/workspaces 或 astrbot_file_write_tool 输出时，优先调用本工具。"
 
 
-@register("astrbot_plugin_file_sender", "10162", "独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送", "1.0.0")
+@register("astrbot_plugin_file_sender", "唐格天", "独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送", "1.0.0")
 class FileSenderPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
