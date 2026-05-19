@@ -1,0 +1,10 @@
+name: astrbot_plugin_file_sender
+display_name: File Sender
+desc: 独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送。
+short_desc: 独立文件发送插件。
+version: v1.0.0
+author: "10162"
+repo: ""
+astrbot_version: ">=4.0.0"
+support_platforms:
+  - aiocqhttp

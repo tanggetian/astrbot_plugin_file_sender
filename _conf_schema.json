@@ -1,0 +1,26 @@
+{
+  "enable_llm_tool": {
+    "description": "允许 LLM 自动调用文件发送工具",
+    "type": "bool",
+    "hint": "开启后，支持函数调用的模型可以使用 send_local_file / upload_file_to_user 发送本地文件，避免内置 send_message_to_user 直接发送本地 file 路径导致 NapCat ENOENT。",
+    "default": false
+  },
+  "onebot_cross_device_api_base_url": {
+    "description": "NapCat 跨设备上传接口地址",
+    "type": "string",
+    "hint": "例如 http://napcat:3000。填写 NapCat HTTP 地址，不是 AstrBot 地址。OneBot 会话默认使用 NapCat upload_file_stream 跨设备上传。",
+    "default": ""
+  },
+  "onebot_cross_device_api_token": {
+    "description": "NapCat 跨设备上传接口 Token",
+    "type": "string",
+    "hint": "如果 NapCat HTTP 服务启用了 token，在这里填写；未启用可留空。",
+    "default": ""
+  },
+  "onebot_cross_device_stream_chunk_size": {
+    "description": "NapCat 分片上传块大小",
+    "type": "int",
+    "hint": "默认 524288 字节（512KB）。",
+    "default": 524288
+  }
+}
