@@ -13,6 +13,7 @@ File Sender 是一个 AstrBot 文件发送插件，用于在 OneBot v11（aiocqh
 - 支持 `astrbot_file_write_tool` 写出的 workspace 相对路径，例如 `test.txt`
 - 支持拦截当前 OneBot 会话中其他插件通过标准结果链或 `context.send_message` 发送的本地文件，并改走 NapCat 上传流程
 - 支持多个上传请求并发处理，每个文件上传使用独立 stream_id
+- 支持 NapCat HTTPS 自签名证书：可配置 PEM CA 证书路径，或在内网环境关闭证书校验
 
 ## 支持平台
 
@@ -47,6 +48,18 @@ NapCat HTTP 服务启用 token 时填写；未启用 token 可留空。
 ### onebot_cross_device_stream_chunk_size
 
 文件分片上传块大小，默认 `524288` 字节。
+
+### onebot_cross_device_ssl_verify
+
+是否校验 NapCat HTTPS 证书，默认 `true`。
+
+当 NapCat 使用自签名证书时，可配合 `onebot_cross_device_ssl_ca_bundle` 指定 PEM CA 证书文件，或在内网可信环境下关闭本项跳过证书校验（不推荐用于公网）。
+
+### onebot_cross_device_ssl_ca_bundle
+
+NapCat 自签名 CA 证书路径，可选。
+
+填写 PEM 格式 CA 证书文件的绝对路径，配合 `onebot_cross_device_ssl_verify=true` 使用即可信任自签名证书。留空则使用系统默认 CA。
 
 ## 使用指令
 
@@ -105,6 +118,16 @@ NapCat HTTP 服务启用 token 时填写；未启用 token 可留空。
 
 ## 更新日志
 
+### v1.3
+
+**新增**
+
+- 新增 NapCat HTTPS 自签名证书支持：可通过 `onebot_cross_device_ssl_ca_bundle` 配置 PEM CA 证书路径，或在内网可信环境通过 `onebot_cross_device_ssl_verify=false` 跳过证书校验。
+
+**修复**
+
+- 修复 LLM 工具 `send_local_file` / `upload_file_to_user` 在 NapCat 上传失败时，工具返回值被 Python logging 系统的 `plugin_tag` formatter 错误覆盖的 bug。改用 `LogManager.GetLogger` 后，真实错误（如 `Connection refused`、SSL 握手失败、HTTP 错误码）能正常透传给 LLM，便于排查。
+
 ### v1.1
 
 - 新增拦截当前 OneBot 会话中其他插件的本地文件发送。
@@ -129,3 +152,22 @@ NapCat HTTP 服务启用 token 时填写；未启用 token 可留空。
 ### 非 OneBot 会话能用吗？
 
 不能。本插件只支持 OneBot v11（aiocqhttp）。非 OneBot 会话不会调用本插件，会继续走 AstrBot 默认流程。
+
+### NapCat 使用自签名 HTTPS 证书时怎么办？
+
+在插件配置中：
+
+- `onebot_cross_device_ssl_verify` 保持为 `true`。
+- `onebot_cross_device_ssl_ca_bundle` 填写 NapCat 自签名 CA 证书（PEM）的绝对路径，例如 `/etc/napcat/ca.pem`。
+
+如果在内网可信环境下，也可以将 `onebot_cross_device_ssl_verify` 关闭跳过证书校验，但不要在公网环境下使用。
+
+### 提示 HTTPS 证书校验失败
+
+错误信息形如 `NapCat HTTPS 证书校验失败：...`。说明 NapCat 提供了自签名或不被系统信任的证书。请：
+
+1. 导出 NapCat 使用的 PEM 格式 CA 证书。
+2. 在插件配置中把 `onebot_cross_device_ssl_ca_bundle` 指向该证书。
+3. 重启 AstrBot 让配置生效。
+
+如果证书格式不是 PEM，会提示 `加载 NapCat CA 证书失败`，请用 `openssl x509 -in ca.crt -out ca.pem -outform PEM` 转码后重试。

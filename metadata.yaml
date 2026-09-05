@@ -1,10 +1,19 @@
 name: astrbot_plugin_file_sender
 display_name: File Sender
-desc: 独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送。
-short_desc: 独立文件发送插件。
-version: v1.1
+desc: 独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送，支持 NapCat HTTPS 自签名证书。
+short_desc: 独立文件发送插件，支持自签名证书。
+version: "1.4"
 author: "唐格天"
 repo: ""
-astrbot_version: ">=4.0.0"
+# 新版本 AstrBot 要求 astrbot_version 用 PEP  440 范围约束，不要带 v 前缀。
+# 旧版本（历史插件）写的是 ">=4.0.0"——已通过插件的 FunctionTool/on_decorating_result/on_llm_request 等
+# API 适配至 v4.18+ 主分支 ABI；这里写更精确的下限，避免在旧 AstrBot 上加载。
+astrbot_version: ">=4.17.0,<5"
 support_platforms:
   - aiocqhttp
+keywords:
+  - file-sender
+  - onebot
+  - napcat
+  - cross-device
+  - self-signed-cert

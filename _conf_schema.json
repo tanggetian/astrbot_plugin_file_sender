@@ -22,5 +22,17 @@
     "type": "int",
     "hint": "默认 524288 字节（512KB）。",
     "default": 524288
+  },
+  "onebot_cross_device_ssl_verify": {
+    "description": "校验 NapCat HTTPS 证书",
+    "type": "bool",
+    "hint": "默认开启。当 NapCat 使用自签名证书时，可配合 onebot_cross_device_ssl_ca_bundle 指定 CA，或关闭本项跳过证书校验（不推荐用于公网）。",
+    "default": true
+  },
+  "onebot_cross_device_ssl_ca_bundle": {
+    "description": "NapCat 自签名 CA 证书路径",
+    "type": "string",
+    "hint": "可选。填写 PEM 格式 CA 证书文件绝对路径，配合 onebot_cross_device_ssl_verify=true 信任自签名证书。留空则使用系统默认 CA。",
+    "default": ""
   }
 }

@@ -1,20 +1,34 @@
+"""astrbot_plugin_file_sender (新版本 AstrBot API 适配版)
+
+迁移要点（与历史版本的差异）：
+- 移除已废弃的 ``@register`` 装饰器，name/author/desc/version 由 metadata.yaml 提供。
+- 将 ``from astrbot.api.star import Context, Star`` 替换为新的
+  ``from astrbot.api import star`` 风格，并通过 ``star.Context``/``star.Star`` 引用。
+- ``FunctionTool`` 的 dataclass 字段保持 ``name``/``description``/``parameters`` 不变
+  （继承自 ``ToolSchema``，由 pydantic 校验），``call()`` 方法的第一个参数名仍叫
+  ``context``，内部沿用原启发式逻辑从该参数中抽取 ``event``。
+- 其余命令/事件/LLM request 钩子全部保持兼容写法。
+"""
+
 import asyncio
 import base64
 import hashlib
 import json
 import re
 import shlex
+import ssl
 import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from astrbot.api import AstrBotConfig, FunctionTool
+from astrbot.api import AstrBotConfig, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import File, Plain
 from astrbot.api.provider import ProviderRequest
-from astrbot.api.star import Context, Star, register
+from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.log import LogManager
 from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
 
 
@@ -88,18 +102,24 @@ class UploadFileToUserTool(FileSenderTool):
     description: str = "上传/发送本地文件给当前用户或指定会话。用途等同 send_local_file；当路径来自 /AstrBot/data/workspaces 或 astrbot_file_write_tool 输出时，优先调用本工具。"
 
 
-@register(
-    "astrbot_plugin_file_sender",
-    "唐格天",
-    "独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送",
-    "1.1",
-)
-class FileSenderPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+# 注意：新版本 AstrBot 不再需要 @register(...) 装饰器。
+# 插件的 name/author/desc/version 由 metadata.yaml 提供，类继承自 star.Star 即被自动识别。
+class FileSenderPlugin(star.Star):
+    """File Sender 插件主类（基于新版本 AstrBot API）。
+
+    元数据（name/author/desc/version/repo）见 metadata.yaml；
+    通过 ``super().__init__(context)`` 让基类完成 self.context / self.logger 的初始化，
+    本插件自行持有 config（``self.config = config``）。
+    """
+
+    def __init__(self, context: star.Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
         self.context = context
         self.config = config
         self.plugin_dir = Path(__file__).resolve().parent
+        self.logger = LogManager.GetLogger("astrbot.plugin.file_sender")
+        self._ssl_context: ssl.SSLContext | None = None
+        self._ssl_context_signature: tuple | None = None
         self.llm_tool = FileSenderTool()
         self.upload_tool = UploadFileToUserTool()
         self.llm_tool.plugin = self
@@ -385,17 +405,10 @@ class FileSenderPlugin(Star):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with self._open_onebot_url(request, timeout=60) as response:
                 response_payload = response.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"NapCat upload_file_stream 请求失败：HTTP {exc.code} {detail}"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(
-                f"NapCat upload_file_stream 网络错误：{exc.reason}"
-            ) from exc
+        except RuntimeError as exc:
+            raise RuntimeError(f"NapCat upload_file_stream 请求失败：{exc}") from exc
         if response_payload:
             try:
                 parsed = json.loads(response_payload)
@@ -442,15 +455,10 @@ class FileSenderPlugin(Star):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with self._open_onebot_url(request, timeout=60) as response:
                 response.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"NapCat {action} 请求失败：HTTP {exc.code} {detail}"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"NapCat {action} 网络错误：{exc.reason}") from exc
+        except RuntimeError as exc:
+            raise RuntimeError(f"NapCat {action} 请求失败：{exc}") from exc
 
     def _resolve_file_path(self, value: str, unified_msg_origin: str = "") -> Path:
         raw = self._clean_option(value)
@@ -500,6 +508,73 @@ class FileSenderPlugin(Star):
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
+
+    def _ssl_options(self) -> tuple[bool, str]:
+        verify_raw = self.config.get("onebot_cross_device_ssl_verify", True)
+        if isinstance(verify_raw, str):
+            verify = verify_raw.strip().lower() not in {"false", "0", "no", "off"}
+        else:
+            verify = bool(verify_raw)
+        ca_bundle = self._clean_option(
+            self.config.get("onebot_cross_device_ssl_ca_bundle")
+        )
+        return verify, ca_bundle
+
+    def _build_ssl_context(self) -> ssl.SSLContext | None:
+        verify, ca_bundle = self._ssl_options()
+        signature = (verify, ca_bundle)
+        if self._ssl_context is not None and self._ssl_context_signature == signature:
+            return self._ssl_context
+        if not verify:
+            self.logger.warning(
+                "NapCat HTTPS 证书校验已关闭（onebot_cross_device_ssl_verify=false），"
+                "请勿在公网环境下使用。"
+            )
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            self._ssl_context = context
+            self._ssl_context_signature = signature
+            return context
+        context = ssl.create_default_context()
+        if ca_bundle:
+            ca_path = Path(ca_bundle).expanduser()
+            if not ca_path.is_file():
+                raise RuntimeError(f"配置的 NapCat CA 证书文件不存在：{ca_path}")
+            try:
+                context.load_verify_locations(cafile=str(ca_path))
+            except ssl.SSLError as exc:
+                raise RuntimeError(
+                    f"加载 NapCat CA 证书失败：{exc}（请确保证书为 PEM 格式）"
+                ) from exc
+            self.logger.info("NapCat HTTPS 已加载自定义 CA 证书：%s", ca_path)
+        self._ssl_context = context
+        self._ssl_context_signature = signature
+        return context
+
+    def _open_onebot_url(self, request: urllib.request.Request, timeout: int = 60):
+        ssl_context = self._build_ssl_context()
+        try:
+            return urllib.request.urlopen(request, timeout=timeout, context=ssl_context)
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            raise RuntimeError(f"HTTP {exc.code} {detail}".strip()) from exc
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                raise RuntimeError(
+                    f"NapCat HTTPS 证书校验失败：{reason}。"
+                    "如使用自签名证书，请在插件配置中设置 "
+                    "onebot_cross_device_ssl_ca_bundle 指向 PEM CA 文件，"
+                    "或在可信内网环境下关闭 onebot_cross_device_ssl_verify。"
+                ) from exc
+            if isinstance(reason, ssl.SSLError):
+                raise RuntimeError(f"NapCat HTTPS 错误：{reason}") from exc
+            raise RuntimeError(f"NapCat 网络错误：{reason}") from exc
 
     def _resolve_onebot_target(
         self,
