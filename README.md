@@ -116,22 +116,7 @@ NapCat 自签名 CA 证书路径，可选。
 4. 私聊文件调用 `upload_private_file`。
 5. 群文件和 QQ 群临时文件调用 `upload_group_file`。
 
-## 更新日志
-
-### v1.3
-
-**新增**
-
-- 新增 NapCat HTTPS 自签名证书支持：可通过 `onebot_cross_device_ssl_ca_bundle` 配置 PEM CA 证书路径，或在内网可信环境通过 `onebot_cross_device_ssl_verify=false` 跳过证书校验。
-
-**修复**
-
-- 修复 LLM 工具 `send_local_file` / `upload_file_to_user` 在 NapCat 上传失败时，工具返回值被 Python logging 系统的 `plugin_tag` formatter 错误覆盖的 bug。改用 `LogManager.GetLogger` 后，真实错误（如 `Connection refused`、SSL 握手失败、HTTP 错误码）能正常透传给 LLM，便于排查。
-
-### v1.1
-
-- 新增拦截当前 OneBot 会话中其他插件的本地文件发送。
-- 支持接管 AstrBot 标准结果链中的 `File` 组件，避免 OneBot/NapCat 直接读取 AstrBot 本地路径导致 ENOENT。
+更新日志见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 常见问题
 
