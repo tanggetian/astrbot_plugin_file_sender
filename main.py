@@ -7,6 +7,12 @@
 - ``FunctionTool`` 的 dataclass 字段保持 ``name``/``description``/``parameters`` 不变
   （继承自 ``ToolSchema``，由 pydantic 校验），``call()`` 方法的第一个参数名仍叫
   ``context``，内部沿用原启发式逻辑从该参数中抽取 ``event``。
+- v1.4.1 起改用 ``pydantic.dataclasses.dataclass`` 装饰 ``FileSenderTool`` / ``UploadFileToUserTool``，
+  并把 ``field(default_factory=...)`` 用 ``pydantic.Field as field`` 别名接入，
+  修复父类 ``ToolSchema.validate_parameters`` 在子类实例化时丢失校验器的问题（之前用标准库
+  ``@dataclass`` 会让 ``__pydantic_validator__`` 在子类被擦除，构造阶段不校验
+  ``parameters`` JSON Schema，仅靠 FunctionToolManager 运行时再校验一次——pydantic dataclass
+  写法可在构造阶段就拦下非法 schema）。
 - 其余命令/事件/LLM request 钩子全部保持兼容写法。
 """
 
@@ -20,8 +26,10 @@ import ssl
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
+
+from pydantic import Field as field
+from pydantic.dataclasses import dataclass
 
 from astrbot.api import AstrBotConfig, star
 from astrbot.api.event import AstrMessageEvent, filter

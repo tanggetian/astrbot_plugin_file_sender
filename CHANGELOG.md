@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.4.1 - 2026-10-16
+
+- **`FunctionTool` 子类改用 `pydantic.dataclasses.dataclass`**：v1.4 用标准库 `@dataclass` 装饰 `FileSenderTool` / `UploadFileToUserTool` 时，`ToolSchema.validate_parameters` 的 `model_validator` 会在子类实例化时被擦除（`__pydantic_validator__` 丢失），导致构造阶段不校验 `parameters` JSON Schema，仅靠 `FunctionToolManager` 在工具调用时再做一次。改用 `pydantic.dataclasses.dataclass` 后，校验器保留在子类构造里，错误可在插件加载阶段立即反馈给作者。
+- **`field(...)` 用 `pydantic.Field as field` 别名接入**：保持原代码对 `field(default_factory=...)` 的写法不动，零业务逻辑变更。
+- **新增 `.gitignore`**：排除 `__pycache__/`、`.ruff_cache/`、`*.pyc`、IDE / OS 临时文件，避免把本地缓存提交进仓库。
+- **不破坏 v1.4 行为**：import 风格、`from astrbot.api import star` 命名空间、`star.Star` 基类、`/sendfile` 指令、两个 LLM 工具、跨设备上传与 HTTPS 自签名证书支持全部维持现状。
+
 ## v1.4 - 2026-09-04
 
 - **迁移至 AstrBot master (v4.18+) 插件接口**：移除已废弃的 `@register(...)` 装饰器，name / author / desc / version 全部由 `metadata.yaml` 提供。

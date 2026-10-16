@@ -2,7 +2,7 @@ name: astrbot_plugin_file_sender
 display_name: File Sender
 desc: 独立本地文件发送插件，支持 OneBot/NapCat 跨设备文件发送，支持 NapCat HTTPS 自签名证书。
 short_desc: 独立文件发送插件，支持自签名证书。
-version: "1.4"
+version: "1.4.1"
 author: "唐格天"
 repo: ""
 # 新版本 AstrBot 要求 astrbot_version 用 PEP  440 范围约束，不要带 v 前缀。
